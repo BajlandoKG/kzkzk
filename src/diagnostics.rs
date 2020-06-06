@@ -5,7 +5,9 @@ use crate::util::*;
 use itertools::Itertools;
 use jsonrpc_core::Params;
 use lsp_types::*;
+use std::collections::HashSet;
 use std::path::Path;
+use std::u64;
 
 pub fn publish_diagnostics(params: Params, ctx: &mut Context) {
     let params: PublishDiagnosticsParams = params.parse().expect("Failed to parse params");
@@ -57,6 +59,32 @@ pub fn publish_diagnostics(params: Params, ctx: &mut Context) {
             )
         })
         .join(" ");
+    let mut lines_with_errors = HashSet::new();
+    let diagnostic_ranges = diagnostics
+        .iter()
+        .map(|x| {
+            let face = match x.severity {
+                Some(DiagnosticSeverity::Error) => "DiagnosticError",
+                _ => "DiagnosticWarning",
+            };
+            // Pretend the language server sent us the diagnostic past the end of line
+            let line = x.range.end.line;
+            let line_text = get_line(line as usize, &document.text);
+            let mut pos =
+                lsp_position_to_kakoune(&x.range.end, &document.text, &ctx.offset_encoding);
+            pos.column = line_text.len_bytes() as u64;
+            // separate all but the first diagnostic on the same line
+            let sep = if lines_with_errors.insert(line) {
+                ""
+            } else {
+                ", "
+            };
+            editor_quote(&format!(
+                "{}+0|{{{}}}{{\\}}{} {}",
+                pos, face, sep, x.message
+            ))
+        })
+        .join(" ");
     // Always show a space on line one if no other highlighter is there,
     // to make sure the column always has the right width
     // Also wrap it in another eval and quotes, to make sure the %opt[] tags are expanded
@@ -64,8 +92,16 @@ pub fn publish_diagnostics(params: Params, ctx: &mut Context) {
         "set buffer lsp_diagnostic_error_count {}
          set buffer lsp_diagnostic_warning_count {}
          set buffer lsp_errors {} {}
-         eval \"set buffer lsp_error_lines {} {} '0| '\"",
-        error_count, warning_count, version, ranges, version, line_flags
+         eval \"set buffer lsp_error_lines {} {} '0| '\"
+         eval \"set buffer lsp_diagnostics {} {}\"",
+        error_count,
+        warning_count,
+        version,
+        ranges,
+        version,
+        line_flags,
+        version,
+        diagnostic_ranges,
     );
     let command = format!(
         "

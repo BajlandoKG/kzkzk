@@ -80,7 +80,7 @@ pub fn start(
                             notification::DidSaveTextDocument::METHOD => (),
                             // TODO if auto-hover or auto-hl-references is not enabled we might want warning about parking as well
                             request::HoverRequest::METHOD => (),
-                            "textDocument/referencesHighlight" => (),
+                            request::DocumentHighlightRequest::METHOD => (),
                             _ => ctx.exec(
                                 msg.meta.clone(),
                                 "lsp-show-error 'Language server is not initialized, parking request'"
@@ -117,8 +117,15 @@ pub fn start(
                     ServerMessage::Response(output) => {
                         match output {
                             Output::Success(success) => {
-                                if let Some((meta, _, callback)) = ctx.response_waitlist.remove(&success.id) {
-                                  callback(&mut ctx, meta, success.result);
+                                if let Some((meta, _, batch_id)) = ctx.response_waitlist.remove(&success.id) {
+                                    if let Some((batch_amt, mut vals, callback)) = ctx.batches.remove(&batch_id) {
+                                        vals.push(success.result);
+                                        if batch_amt == 1 {
+                                            callback(&mut ctx, meta, vals);
+                                        } else {
+                                            ctx.batches.insert(batch_id, (batch_amt - 1, vals, callback));
+                                        }
+                                    }
                                 } else {
                                     error!("Id {:?} is not in waitlist!", success.id);
                                 }
@@ -168,6 +175,7 @@ fn dispatch_editor_request(request: EditorRequest, mut ctx: &mut Context) {
     let meta = request.meta;
     let params = request.params;
     let method: &str = &request.method;
+    let ranges: Option<Vec<Range>> = request.ranges;
     match method {
         notification::DidOpenTextDocument::METHOD => {
             text_document_did_open(meta, params, &mut ctx);
@@ -197,13 +205,16 @@ fn dispatch_editor_request(request: EditorRequest, mut ctx: &mut Context) {
             hover::text_document_hover(meta, params, &mut ctx);
         }
         request::GotoDefinition::METHOD => {
-            definition::text_document_definition(meta, params, &mut ctx);
+            goto::text_document_definition(meta, params, &mut ctx);
         }
         request::GotoImplementation::METHOD => {
-            implementation::text_document_implementation(meta, params, &mut ctx);
+            goto::text_document_implementation(meta, params, &mut ctx);
+        }
+        request::GotoTypeDefinition::METHOD => {
+            goto::text_document_type_definition(meta, params, &mut ctx);
         }
         request::References::METHOD => {
-            references::text_document_references(meta, params, &mut ctx);
+            goto::text_document_references(meta, params, &mut ctx);
         }
         notification::Exit::METHOD => {
             general::exit(&mut ctx);
@@ -211,11 +222,18 @@ fn dispatch_editor_request(request: EditorRequest, mut ctx: &mut Context) {
         request::SignatureHelpRequest::METHOD => {
             signature_help::text_document_signature_help(meta, params, &mut ctx);
         }
+        request::DocumentHighlightRequest::METHOD => {
+            highlights::text_document_highlights(meta, params, &mut ctx);
+        }
         request::DocumentSymbolRequest::METHOD => {
             document_symbol::text_document_document_symbol(meta, &mut ctx);
         }
         request::Formatting::METHOD => {
             formatting::text_document_formatting(meta, params, &mut ctx);
+        }
+        request::RangeFormatting::METHOD => match ranges {
+            Some(range) => range_formatting::text_document_range_formatting(meta, params, range, &mut ctx),
+            None => warn!("No range provided to {}", method),
         }
         request::WorkspaceSymbol::METHOD => {
             workspace::workspace_symbol(meta, params, &mut ctx);
@@ -229,9 +247,6 @@ fn dispatch_editor_request(request: EditorRequest, mut ctx: &mut Context) {
         "capabilities" => {
             general::capabilities(meta, &mut ctx);
         }
-        "textDocument/referencesHighlight" => {
-            references::text_document_references_highlight(meta, params, &mut ctx);
-        }
         "apply-workspace-edit" => {
             workspace::apply_edit_from_editor(meta, params, ctx);
         }
@@ -240,6 +255,9 @@ fn dispatch_editor_request(request: EditorRequest, mut ctx: &mut Context) {
         }
         "update-semantic-highlighting" => {
             semantic_highlighting::editor_update(meta, params, &mut ctx);
+        }
+        request::SemanticTokensRequest::METHOD => {
+            semantic_tokens::tokens_request(meta, params, ctx);
         }
 
         // CCLS
@@ -262,6 +280,11 @@ fn dispatch_editor_request(request: EditorRequest, mut ctx: &mut Context) {
         // eclipse.jdt.ls
         "eclipse.jdt.ls/organizeImports" => {
             eclipse_jdt_ls::organize_imports(meta, ctx);
+        }
+
+        // rust-analyzer
+        rust_analyzer::InlayHints::METHOD => {
+            rust_analyzer::inlay_hints(meta, params, ctx);
         }
 
         _ => {

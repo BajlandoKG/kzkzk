@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::io::Error;
 use toml;
+use lsp_types::Range;
 
 pub enum Void {}
 
@@ -21,6 +22,10 @@ pub struct Config {
     pub snippet_support: bool,
     #[serde(default)]
     pub semantic_scopes: HashMap<String, String>,
+    #[serde(default)]
+    pub semantic_tokens: HashMap<String, String>,
+    #[serde(default)]
+    pub semantic_token_modifiers: HashMap<String, String>,
 }
 
 #[derive(Clone, Deserialize, Debug)]
@@ -76,6 +81,7 @@ pub struct EditorRequest {
     pub meta: EditorMeta,
     pub method: String,
     pub params: EditorParams,
+    pub ranges: Option<Vec<Range>>,
 }
 
 #[derive(Deserialize)]
@@ -167,7 +173,7 @@ where
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, PartialEq, Clone)]
 pub struct KakounePosition {
     pub line: u64,
     pub column: u64, // in bytes, not chars!!!

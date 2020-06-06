@@ -125,16 +125,22 @@ Either way you get:
 ** to automatically show hover when you move around use `lsp-auto-hover-enable`
 ** to show hover anchored to hovered position do `set global lsp_hover_anchor true`
 ** to exclude diagnostics do `set-option global lsp_show_hover_format 'printf %s "${lsp_info}"'` 
-* `lsp-find-error` command to jump to the next or previous error in the file
-* `lsp-references` command to find references for a symbol under the main cursor, mapped to `gr` by default
-  `\*references*` buffer has `grep` filetype so you can use all commands provided by `grep.kak`, including `grep-jump`.
-* `lsp-highlight-references` command to highlight references in current buffer for a symbol under the main cursor with `Reference` face (which is equal to `MatchingChar` face by default)
+* `lsp-declaration` command to jump to the declaration of the symbol under the main cursor
+* `lsp-definition` command to jump to the definition of the symbol under the main cursor
+* `lsp-type-definition` command to jump to the definition of the type of the symbol under the main cursor
 * `lsp-implementation` command to find implementations for a symbol under the main cursor
-  `\*implementations*` buffer has `grep` filetype so you can use all commands provided by `grep.kak`, including `grep-jump`.
+* `lsp-references` command to find references for a symbol under the main cursor, mapped to `gr` by default
+** for the previous five commands, `\*goto*` buffer has `grep` filetype so you can press `<ret>` on a line or use the `grep-jump` command
+* `lsp-find-error` command to jump to the next or previous error in the file
+** `lsp-references-previous-match` and `lsp-references-next-match` to navigate between references
+* `lsp-highlight-references` command to highlight references in current buffer for a symbol under the main cursor with `Reference` face (which is equal to `MatchingChar` face by default)
 * `lsp-document-symbol` command to list current buffer's symbols
 * `lsp-workspace-symbol` command to list project-wide symbols matching the query
 * `lsp-workspace-symbol-incr` command to incrementally list project-wide symbols matching the query
+** `\*symbols*` buffer has `grep` filetype so you can press `<ret>` on a line or use the `grep-jump` command
+** `lsp-symbols-previous-match` and `lsp-symbols-next-match` to navigate between symbols
 * `lsp-diagnostics` command to list project-wide diagnostics (current buffer determines project and language to collect diagnostics)
+** `\*diagnostics*` buffer has `make` filetype so you can press `<ret>` on a line or use the `make-jump` command
 * inline diagnostics highlighting using `DiagnosticError` and `DiagnosticWarning` faces; could be disabled with `lsp-inline-diagnostics-disable` command
 * flags in the left margin on lines with errors or warnings; could be disabled with `lsp-diagnostic-lines-disable` command
 * `lsp-formatting` command to format current buffer, according to the `tabstop` and `lsp_insert_spaces` options
@@ -174,6 +180,7 @@ attempt to spin up server if it is down.
 | o | lsp-workspace-symbol-incr
 | n | lsp-find-error
 | p | lsp-find-error --previous
+| y | lsp-type-definition
 | & | lsp-highlight-references
 |===
 
@@ -256,6 +263,52 @@ set-option global lsp_server_configuration rust.clippy_preference="on"
 ----
 
 That is, the keys of the `lsp_server_configuration` option are a `.`-delimited path of JSON objects. For implementation reasons, the values use TOML serialisation rules rather than JSON rules, but they're pretty much the same thing for strings, numbers and booleans, which are the most common configuration types.
+
+== Inlay hints for rust-analyzer
+
+Inlay hints are a feature supported by https://github.com/rust-analyzer/rust-analyzer[rust-analyzer], which show inferred types, parameter names in function calls, and the types of chained calls inline in the code. To enable support for it in kak-lsp, add the following to your `kakrc`:
+
+----
+hook global WinSetOption filetype=rust %{
+  hook window -group rust-inlay-hints BufReload .* rust-analyzer-inlay-hints
+  hook window -group rust-inlay-hints NormalIdle .* rust-analyzer-inlay-hints
+  hook window -group rust-inlay-hints InsertIdle .* rust-analyzer-inlay-hints
+  hook -once -always window WinSetOption filetype=.* %{
+    remove-hooks window rust-inlay-hints
+  }
+}
+----
+
+You can change the face of the hints with `set-face global InlayHint <face>`.
+
+Note that this requires you to build Kakoune from source as the feature that allows this is not yet in a release.
+
+== Semantic Tokens
+
+kak-lsp supports the semanticTokens feature for semantic highlighting. If the language server supports it, you can enable it with:
+
+----
+hook global WinSetOption filetype=<language> %{
+  hook window -group semantic-tokens BufReload .* lsp-semantic-tokens
+  hook window -group semantic-tokens NormalIdle .* lsp-semantic-tokens
+  hook window -group semantic-tokens InsertIdle .* lsp-semantic-tokens
+  hook -once -always window WinSetOption filetype=.* %{
+    remove-hooks window semantic-tokens
+  }
+}
+----
+
+The faces used for semantic tokens and modifiers can be modified in `kak-lsp.toml`, under the `semantic_tokens` and `semantic_modifiers` sections. The modifiers are used first if available, and then the main token type is used if no modifier face is specified.
+
+== Inlay Diagnostics
+
+kak-lsp supports showing diagnostics inline after their respective line, but this behaviour can be somewhat buggy and must be enabled explicitly:
+
+----
+lsp-inlay-diagnostics-enable global
+----
+
+Note that this requires you to build Kakoune from source as the feature that allows this is not yet in a release.
 
 == Limitations
 

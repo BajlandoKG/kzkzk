@@ -13,6 +13,9 @@ set-face global DiagnosticWarning yellow
 set-face global LineFlagErrors red
 # Face for highlighting references.
 set-face global Reference MatchingChar
+set-face global ReferenceBind +u@Reference
+# Face for inlay hints.
+set-face global InlayHint cyan+d
 
 # Options for tuning kak-lsp behaviour.
 
@@ -65,6 +68,9 @@ declare-option -hidden range-specs cquery_semhl
 declare-option -hidden int lsp_timestamp -1
 declare-option -hidden range-specs lsp_references
 declare-option -hidden range-specs lsp_semantic_highlighting
+declare-option -hidden range-specs lsp_semantic_tokens
+declare-option -hidden range-specs rust_analyzer_inlay_hints
+declare-option -hidden range-specs lsp_diagnostics
 
 ### Requests ###
 
@@ -207,6 +213,24 @@ column    = %d
 ' "${kak_session}" "${kak_client}" "${kak_buffile}" "${kak_opt_filetype}" "${kak_timestamp}" ${kak_cursor_line} ${kak_cursor_column} | ${kak_opt_lsp_cmd} --request) > /dev/null 2>&1 < /dev/null & }
 }
 
+define-command lsp-type-definition -docstring "Go to type-definition" %{
+    lsp-did-change-and-then lsp-type-definition-request
+}
+
+define-command -hidden lsp-type-definition-request -docstring "Go to type definition" %{
+    nop %sh{ (printf '
+session   = "%s"
+client    = "%s"
+buffile   = "%s"
+filetype  = "%s"
+version   = %d
+method    = "textDocument/typeDefinition"
+[params.position]
+line      = %d
+column    = %d
+' "${kak_session}" "${kak_client}" "${kak_buffile}" "${kak_opt_filetype}" "${kak_timestamp}" ${kak_cursor_line} ${kak_cursor_column} | ${kak_opt_lsp_cmd} --request) > /dev/null 2>&1 < /dev/null & }
+}
+
 define-command lsp-code-actions -docstring "Request code actions for the main cursor position" %{
     lsp-did-change-and-then lsp-code-actions-request
 }
@@ -261,12 +285,12 @@ column    = %d
 ' "${kak_session}" "${kak_client}" "${kak_buffile}" "${kak_opt_filetype}" "${kak_timestamp}" ${kak_cursor_line} ${kak_cursor_column} | ${kak_opt_lsp_cmd} --request) > /dev/null 2>&1 < /dev/null & }
 }
 
-define-command lsp-references-next-match -docstring 'Jump to the next references match' %{
-    lsp-next-match '*references*'
+define-command lsp-goto-next-match -docstring 'Jump to the next goto match' %{
+    lsp-next-match '*goto*'
 }
 
-define-command lsp-references-previous-match -docstring 'Jump to the previous references match' %{
-    lsp-previous-match '*references*'
+define-command lsp-goto-previous-match -docstring 'Jump to the previous goto match' %{
+    lsp-previous-match '*goto*'
 }
 
 define-command lsp-highlight-references -docstring "Highlight symbol references" %{
@@ -280,7 +304,7 @@ client    = "%s"
 buffile   = "%s"
 filetype  = "%s"
 version   = %d
-method    = "textDocument/referencesHighlight"
+method    = "textDocument/documentHighlight"
 [params.position]
 line      = %d
 column    = %d
@@ -580,6 +604,41 @@ insertSpaces = %s
 ' "${kak_session}" "${kak_client}" "${kak_buffile}" "${kak_opt_filetype}" "${kak_timestamp}" "${kak_opt_tabstop}" "${kak_opt_lsp_insert_spaces}" | ${kak_opt_lsp_cmd} --request) > /dev/null 2>&1 < /dev/null }
 }
 
+define-command lsp-range-formatting -docstring "Format selections" %{
+    lsp-did-change-and-then lsp-range-formatting-request
+}
+
+define-command -hidden lsp-range-formatting-request -docstring "Format selections" %{
+    nop %sh{
+ranges_str="$(for range in ${kak_selections_char_desc}; do
+    IFS=, read start end <<< $range
+    IFS=. read startline startcolumn <<< $start
+    IFS=. read endline endcolumn <<< $end
+    printf '
+[[ranges]]
+  [ranges.start]
+  line = %d
+  character = %d
+  [ranges.end]
+  line = %d
+  character = %d
+' $((startline - 1)) $((startcolumn - 1)) $((endline - 1)) $((endcolumn - 1))
+done)"
+
+(printf '
+session      = "%s"
+client       = "%s"
+buffile      = "%s"
+filetype     = "%s"
+version      = %d
+method       = "textDocument/rangeFormatting"
+[params]
+tabSize      = %d
+insertSpaces = %s
+%s
+' "${kak_session}" "${kak_client}" "${kak_buffile}" "${kak_opt_filetype}" "${kak_timestamp}" "${kak_opt_tabstop}" "${kak_opt_lsp_insert_spaces}" "${ranges_str}" | ${kak_opt_lsp_cmd} --request) > /dev/null 2>&1 < /dev/null
+}}
+
 define-command lsp-formatting-sync -docstring "Format document, blocking Kakoune session until done" %{
     lsp-did-change-and-then lsp-formatting-sync-request
 }
@@ -604,6 +663,49 @@ insertSpaces = %s
 ' "${kak_session}" "${kak_client}" "${kak_buffile}" "${kak_opt_filetype}" "${kak_timestamp}" ${pipe} "${kak_opt_tabstop}" "${kak_opt_lsp_insert_spaces}" | ${kak_opt_lsp_cmd} --request) > /dev/null 2>&1 < /dev/null
 
 cat ${pipe}
+rm -rf ${tmp}
+}}
+
+define-command lsp-range-formatting-sync -docstring "Format selections, blocking Kakoune session until done" %{
+    lsp-did-change-and-then lsp-range-formatting-sync-request
+}
+
+define-command -hidden lsp-range-formatting-sync-request -docstring "Format selections, blocking Kakoune session until done" %{
+    evaluate-commands -no-hooks %sh{
+range=${kak_selection_desc}
+tmp=$(mktemp -q -d -t 'lsp-formatting.XXXXXX' 2>/dev/null || mktemp -q -d)
+pipe=${tmp}/fifo
+mkfifo ${pipe}
+ranges_str="$(for range in ${kak_selections_char_desc}; do
+    IFS=, read start end <<< $range
+    IFS=. read startline startcolumn <<< $start
+    IFS=. read endline endcolumn <<< $end
+    printf '
+[[ranges]]
+  [ranges.start]
+  line = %d
+  character = %d
+  [ranges.end]
+  line = %d
+  character = %d
+' $((startline - 1)) $((startcolumn - 1)) $((endline - 1)) $((endcolumn - 1))
+done)"
+
+(printf '
+session      = "%s"
+client       = "%s"
+buffile      = "%s"
+filetype     = "%s"
+version      = %d
+fifo         = "%s"
+method       = "textDocument/rangeFormatting"
+[params]
+tabSize      = %d
+insertSpaces = %s
+%s
+' "${kak_session}" "${kak_client}" "${kak_buffile}" "${kak_opt_filetype}" "${kak_timestamp}" ${pipe} "${kak_opt_tabstop}" "${kak_opt_lsp_insert_spaces}" "${ranges_str}" | ${kak_opt_lsp_cmd} --request) > /dev/null 2>&1 < /dev/null
+
+cat ${pipe} | tee /tmp/pipe
 rm -rf ${tmp}
 }}
 
@@ -757,6 +859,42 @@ method    = "eclipse.jdt.ls/organizeImports"
 ' "${kak_session}" "${kak_client}" "${kak_buffile}" "${kak_opt_filetype}" "${kak_timestamp}" | ${kak_opt_lsp_cmd} --request) > /dev/null 2>&1 < /dev/null & }
 }
 
+# rust-analyzer extensions
+
+define-command rust-analyzer-inlay-hints -docstring "rust-analyzer-inlay-hints: Request inlay hints (rust-analyzer)" %{
+  lsp-did-change-and-then rust-analyzer-inlay-hints-request
+}
+
+define-command -hidden rust-analyzer-inlay-hints-request %{
+    nop %sh{ (printf '
+session   = "%s"
+client    = "%s"
+buffile   = "%s"
+filetype  = "%s"
+version   = %d
+method    = "rust-analyzer/inlayHints"
+[params]
+' "${kak_session}" "${kak_client}" "${kak_buffile}" "${kak_opt_filetype}" "${kak_timestamp}" | ${kak_opt_lsp_cmd} --request) > /dev/null 2>&1 < /dev/null & }
+}
+
+# semantic tokens
+
+define-command lsp-semantic-tokens -docstring "semantic-tokens-update: Request semantic tokens" %{
+  lsp-did-change-and-then lsp-semantic-tokens-request
+}
+
+define-command -hidden lsp-semantic-tokens-request %{
+    nop %sh{ (printf '
+session   = "%s"
+client    = "%s"
+buffile   = "%s"
+filetype  = "%s"
+version   = %d
+method    = "textDocument/semanticTokens"
+[params]
+' "${kak_session}" "${kak_client}" "${kak_buffile}" "${kak_opt_filetype}" "${kak_timestamp}" | ${kak_opt_lsp_cmd} --request) > /dev/null 2>&1 < /dev/null & }
+}
+
 ### Response handling ###
 
 # Feel free to override these commands in your config if you need to customise response handling.
@@ -774,7 +912,7 @@ define-command -hidden lsp-show-hover -params 3 -docstring %{
     content="${content%"${content##*[![:space:]]}"}"
 
     if [ $kak_opt_lsp_hover_max_lines -gt 0 ]; then
-        content=$(printf %s "$2" | head -n $kak_opt_lsp_hover_max_lines)
+        content=$(printf %s "$content" | head -n $kak_opt_lsp_hover_max_lines)
     fi
 
     content=$(printf %s "$content" | sed s/\'/\'\'/g)
@@ -801,21 +939,9 @@ define-command -hidden lsp-show-diagnostics -params 2 -docstring "Render diagnos
     }
 }
 
-define-command -hidden lsp-show-references -params 2 -docstring "Render references" %{
+define-command -hidden lsp-show-goto-choices -params 2 -docstring "Render goto choices" %{
     evaluate-commands -try-client %opt[toolsclient] %{
-        edit! -scratch *references*
-        cd %arg{1}
-        try %{ set-option buffer working_folder %sh{pwd} }
-        set-option buffer filetype grep
-        set-option buffer grep_current_line 0
-        set-register '"' %arg{2}
-        execute-keys Pgg
-    }
-}
-
-define-command -hidden lsp-show-implementations -params 2 -docstring "Render implementations" %{
-    evaluate-commands -try-client %opt[toolsclient] %{
-        edit! -scratch *implementations*
+        edit! -scratch *goto*
         cd %arg{1}
         try %{ set-option buffer working_folder %sh{pwd} }
         set-option buffer filetype grep
@@ -1045,6 +1171,14 @@ define-command lsp-diagnostic-lines-disable -params 1 -docstring "lsp-diagnostic
     remove-highlighter "%arg{1}/lsp_error_lines"
 }
 
+define-command lsp-inlay-diagnostics-enable -params 1 -docstring "lsp-inlay-diagnostics-enable <scope>: Enable inlay diagnostics highlighting for <scope>" %{
+    add-highlighter "%arg{1}/lsp_diagnostics" replace-ranges lsp_diagnostics
+}
+
+define-command lsp-inlay-diagnostics-disable -params 1 -docstring "lsp-inlay-diagnostics-disable <scope>: Disable inlay diagnostics highlighting for <scope>"  %{
+    remove-highlighter "%arg{1}/lsp_diagnostics"
+}
+
 define-command lsp-auto-hover-enable -docstring "Enable auto-requesting hover info for current position" %{
     hook -group lsp-auto-hover global NormalIdle .* %{
         lsp-hover
@@ -1115,7 +1249,9 @@ map global lsp o '<esc>: lsp-workspace-symbol-incr<ret>'  -docstring 'search pro
 map global lsp n '<esc>: lsp-find-error<ret>'             -docstring 'find next error'
 map global lsp p '<esc>: lsp-find-error --previous<ret>'  -docstring 'find previous error'
 map global lsp q '<esc>: lsp-exit<ret>'                   -docstring 'exit session'
+map global lsp y '<esc>: lsp-type-definition<ret>'        -docstring 'go to type definition'
 map global lsp <&> '<esc>: lsp-highlight-references<ret>' -docstring 'lsp-highlight-references'
+map global lsp = '<esc>: lsp-range-formatting<ret>'       -docstring 'format selections'
 
 ### Default integration ###
 
@@ -1124,11 +1260,14 @@ define-command -hidden lsp-enable -docstring "Default integration with kak-lsp" 
     add-highlighter global/cquery_semhl ranges cquery_semhl
     add-highlighter global/lsp_references ranges lsp_references
     add-highlighter global/lsp_semantic_highlighting ranges lsp_semantic_highlighting
+    add-highlighter global/lsp_semantic_tokens ranges lsp_semantic_tokens
+    add-highlighter global/rust_analyzer_inlay_hints replace-ranges rust_analyzer_inlay_hints
     lsp-inline-diagnostics-enable global
     lsp-diagnostic-lines-enable global
 
     map global goto d '<esc>: lsp-definition<ret>' -docstring 'definition'
     map global goto r '<esc>: lsp-references<ret>' -docstring 'references'
+    map global goto y '<esc>: lsp-type-definition<ret>' -docstring 'type definition'
 
     hook -group lsp global BufCreate .* %{
         lsp-did-open
@@ -1148,10 +1287,13 @@ define-command -hidden lsp-disable -docstring "Disable kak-lsp" %{
     remove-highlighter global/cquery_semhl
     remove-highlighter global/lsp_references
     remove-highlighter global/lsp_semantic_highlighting
+    remove-highlighter global/lsp_semantic_tokens
+    remove-highlighter global/rust_analyzer_inlay_hints
     lsp-inline-diagnostics-disable global
     lsp-diagnostic-lines-disable global
-    unmap global goto d '<esc>: lsp-definition<ret>' -docstring 'definition'
-    unmap global goto r '<esc>: lsp-references<ret>' -docstring 'references'
+    unmap global goto d '<esc>: lsp-definition<ret>'
+    unmap global goto r '<esc>: lsp-references<ret>'
+    unmap global goto y '<esc>: lsp-type-definition<ret>'
     remove-hooks global lsp
     remove-hooks global lsp-auto-hover
     remove-hooks global lsp-auto-hover-insert-mode
@@ -1165,12 +1307,15 @@ define-command lsp-enable-window -docstring "Default integration with kak-lsp in
     add-highlighter window/cquery_semhl ranges cquery_semhl
     add-highlighter window/lsp_references ranges lsp_references
     add-highlighter window/lsp_semantic_highlighting ranges lsp_semantic_highlighting
+    add-highlighter window/lsp_semantic_tokens ranges lsp_semantic_tokens
+    add-highlighter window/rust_analyzer_inlay_hints replace-ranges rust_analyzer_inlay_hints
 
     lsp-inline-diagnostics-enable window
     lsp-diagnostic-lines-enable window
 
     map window goto d '<esc>: lsp-definition<ret>' -docstring 'definition'
     map window goto r '<esc>: lsp-references<ret>' -docstring 'references'
+    map window goto y '<esc>: lsp-type-definition<ret>' -docstring 'type definition'
 
     hook -group lsp window WinClose .* lsp-did-close
     hook -group lsp window BufWritePost .* lsp-did-save
@@ -1189,10 +1334,13 @@ define-command lsp-disable-window -docstring "Disable kak-lsp in the window scop
     remove-highlighter window/cquery_semhl
     remove-highlighter window/lsp_references
     remove-highlighter window/lsp_semantic_highlighting
+    remove-highlighter window/lsp_semantic_tokens
+    remove-highlighter window/rust_analyzer_inlay_hints
     lsp-inline-diagnostics-disable window
     lsp-diagnostic-lines-disable window
     unmap window goto d '<esc>: lsp-definition<ret>'
     unmap window goto r '<esc>: lsp-references<ret>'
+    unmap window goto y '<esc>: lsp-type-definition<ret>'
     remove-hooks window lsp
     remove-hooks global lsp-auto-hover
     remove-hooks global lsp-auto-hover-insert-mode
@@ -1216,7 +1364,7 @@ face global SnippetsOtherPlaceholders black,yellow+F
 # Second param is the actual snippet
 def -hidden lsp-snippets-insert-completion -params 2 %{ eval -save-regs "a" %{
     reg 'a' "%arg{1}"
-    exec -draft "<a-;><a-/>%val[main_reg_a]<ret>d"
+    exec -draft "<a-;><a-/>%reg{a}<ret>d"
     eval -draft -verbatim lsp-snippets-insert %arg{2}
     remove-hooks window lsp-post-completion
     hook -once -group lsp-post-completion window InsertCompletionHide .* %{
